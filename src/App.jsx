@@ -129,8 +129,10 @@ const C = {
   textPrimary: "#F0F4F8", textSecondary: "#8A9BB0",
 };
 
-const css = `
+const css = 
+`
   @import url('https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@500;700&family=Inter:wght@400;500;600&display=swap');
+[data-netlify-deploy-id] { display: none !important; }
   * { box-sizing: border-box; margin: 0; padding: 0; }
   body { background: ${C.bg}; color: ${C.textPrimary}; font-family: 'Inter', sans-serif; min-height: 100vh; }
   ::-webkit-scrollbar { width: 4px; } ::-webkit-scrollbar-thumb { background: ${C.border}; border-radius: 2px; }
