@@ -27,7 +27,11 @@ const calcEV = (yourOdds, fairOdds, stake) => {
   return (wp * profit) - ((1 - wp) * Number(stake));
 };
 const calcNetPL = (bets) => bets.reduce((acc, b) => {
-  if (b.result === "win") return acc + americanToProfit(b.odds, b.stake);
+  if (b.result === "win") {
+    // Parlays store actual payout in b.payout; regular bets derive it from odds
+    const profit = b.payout != null ? Number(b.payout) : americanToProfit(b.odds, b.stake);
+    return acc + profit;
+  }
   if (b.result === "loss") return acc - Number(b.stake);
   return acc;
 }, 0);
@@ -107,8 +111,8 @@ const buildInsightSummary = (bets) => {
 };
 
 // ── CONSTANTS ─────────────────────────────────────────────────────────────────
-const SPORTS = ["NFL", "NBA", "MLB"];
-const SPORT_KEYS = { NFL: "americanfootball_nfl", NBA: "basketball_nba", MLB: "baseball_mlb" };
+const SPORTS = ["NFL", "NCAAF", "NBA", "MLB"];
+const SPORT_KEYS = { NFL: "americanfootball_nfl", NCAAF: "americanfootball_ncaa", NBA: "basketball_nba", MLB: "baseball_mlb" };
 const BET_TYPES = ["Moneyline", "Spread", "Over/Under", "Prop", "Parlay", "Futures"];
 const BOOKS = ["DraftKings", "FanDuel", "BetMGM", "Caesars", "ESPN Bet", "PointsBet", "Other"];
 const RESULTS = ["pending", "win", "loss", "push"];
@@ -129,12 +133,8 @@ const C = {
   textPrimary: "#F0F4F8", textSecondary: "#8A9BB0",
 };
 
-const css = 
-`
+const css = `
   @import url('https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@500;700&family=Inter:wght@400;500;600&display=swap');
-[data-netlify-deploy-id],
-.netlify-badge,
-a[href*="netlify"] { display: none !important; }
   * { box-sizing: border-box; margin: 0; padding: 0; }
   body { background: ${C.bg}; color: ${C.textPrimary}; font-family: 'Inter', sans-serif; min-height: 100vh; }
   ::-webkit-scrollbar { width: 4px; } ::-webkit-scrollbar-thumb { background: ${C.border}; border-radius: 2px; }
@@ -277,37 +277,214 @@ function Dashboard({ bets }) {
   );
 }
 
+// ── ODDS INPUT ────────────────────────────────────────────────────────────────
+// Splits American odds into a +/- dropdown + numeric field for easier mobile input
+function OddsInput({ value, onChange, error }) {
+  const parseOdds = (v) => { const n = Number(v); if (isNaN(n) || !v) return { sign: "-", num: "" }; return { sign: n > 0 ? "+" : "-", num: String(Math.abs(n)) }; };
+  const { sign, num } = parseOdds(value);
+  const update = (newSign, newNum) => { if (!newNum) { onChange(""); return; } const n = Number(newNum); if (isNaN(n) || n <= 0) return; onChange(newSign === "+" ? `+${n}` : `-${n}`); };
+  return (
+    <div>
+      <label>Odds (American) *</label>
+      <div style={{ display: "flex", gap: 6 }}>
+        <select value={sign} onChange={e => update(e.target.value, num)} style={{ width: 70, flexShrink: 0, ...(error ? { borderColor: C.red } : {}) }}>
+          <option value="-">−</option>
+          <option value="+">+</option>
+        </select>
+        <input type="number" min="100" step="1" value={num} onChange={e => update(sign, e.target.value)} placeholder="110" style={{ flex: 1, ...(error ? { borderColor: C.red } : {}) }} />
+      </div>
+      {error && <div style={{ fontSize: 11, color: C.red, marginTop: 3 }}>Enter a valid number (e.g. 110, 150)</div>}
+      {validateOdds(value) && (
+        <div style={{ fontSize: 12, color: C.textSecondary, marginTop: 4 }}>
+          {fmtOdds(value)} · Implied: <span style={{ color: C.textPrimary, fontWeight: 600 }}>{(americanToImplied(value) * 100).toFixed(1)}%</span>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── PARLAY LEG INPUT ──────────────────────────────────────────────────────────
+function ParlayLegs({ legs, onChange }) {
+  const addLeg = () => onChange([...legs, { id: uid(), description: "", sign: "-", num: "" }]);
+  const removeLeg = (id) => onChange(legs.filter(l => l.id !== id));
+  const updateLeg = (id, field, val) => onChange(legs.map(l => l.id === id ? { ...l, [field]: val } : l));
+  const getLegOdds = (l) => { if (!l.num) return ""; const n = Number(l.num); if (isNaN(n) || n <= 0) return ""; return l.sign === "+" ? `+${n}` : `-${n}`; };
+
+  return (
+    <div>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
+        <label style={{ marginBottom: 0 }}>Parlay Legs *</label>
+        <button onClick={addLeg} style={{ fontSize: 12, padding: "4px 10px", background: C.blue, color: "#fff", borderRadius: 6 }}>+ Add Leg</button>
+      </div>
+      {legs.length === 0 && (
+        <div style={{ fontSize: 13, color: C.textSecondary, padding: "10px 12px", border: `1px dashed ${C.border}`, borderRadius: 8, textAlign: "center" }}>
+          Tap "+ Add Leg" to build your parlay
+        </div>
+      )}
+      <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+        {legs.map((leg, i) => (
+          <div key={leg.id} style={{ background: C.bg, border: `1px solid ${C.border}`, borderRadius: 8, padding: "10px 12px" }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
+              <span style={{ fontSize: 11, color: C.textSecondary, fontWeight: 600 }}>LEG {i + 1}</span>
+              <button onClick={() => removeLeg(leg.id)} style={{ fontSize: 11, padding: "2px 8px", background: "transparent", color: C.red, border: `1px solid ${C.red}`, borderRadius: 5 }}>Remove</button>
+            </div>
+            <input value={leg.description} onChange={e => updateLeg(leg.id, "description", e.target.value)} placeholder="e.g. Chiefs -3.5" style={{ marginBottom: 6, fontSize: 13 }} />
+            <div style={{ display: "flex", gap: 6 }}>
+              <select value={leg.sign} onChange={e => updateLeg(leg.id, "sign", e.target.value)} style={{ width: 70, flexShrink: 0, fontSize: 13, padding: "7px 8px" }}>
+                <option value="-">−</option>
+                <option value="+">+</option>
+              </select>
+              <input type="number" min="100" step="1" value={leg.num} onChange={e => updateLeg(leg.id, "num", e.target.value)} placeholder="110" style={{ flex: 1, fontSize: 13, padding: "7px 10px" }} />
+              {getLegOdds(leg) && <span style={{ fontSize: 12, color: C.textSecondary, alignSelf: "center", flexShrink: 0 }}>{(americanToImplied(getLegOdds(leg)) * 100).toFixed(1)}%</span>}
+            </div>
+          </div>
+        ))}
+      </div>
+      {legs.length >= 2 && legs.every(l => l.num) && (
+        <div style={{ fontSize: 12, color: C.textSecondary, marginTop: 8, padding: "8px 12px", background: C.bg, border: `1px solid ${C.border}`, borderRadius: 8 }}>
+          {legs.length}-leg parlay · Combined prob: <span style={{ color: C.textPrimary, fontWeight: 600 }}>
+            {(legs.reduce((acc, l) => acc * americanToImplied(getLegOdds(l)), 1) * 100).toFixed(1)}%
+          </span>
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ── LOG BET ───────────────────────────────────────────────────────────────────
 function LogBet({ bets, setBets, editBet, setEditBet, setActiveTab }) {
-  const blank = { sport: "", betType: "", book: "", description: "", odds: "", stake: "", result: "pending", notes: "", date: new Date().toISOString().split("T")[0] };
+  const blank = { sport: "", betType: "", book: "", description: "", odds: "", stake: "", payout: "", result: "pending", notes: "", date: new Date().toISOString().split("T")[0], legs: [] };
+
+  // When loading an existing parlay bet for editing, reconstruct legs from stored legs array
   const [form, setFormState] = useState(editBet || blank);
   const [errors, setErrors] = useState({});
   const [saved, setSaved] = useState(false);
-  useEffect(() => { if (editBet) setFormState(editBet); }, [editBet]);
+
+  useEffect(() => { if (editBet) setFormState({ ...blank, ...editBet, legs: editBet.legs || [] }); }, [editBet]);
+
   const set = (k, v) => { setFormState(f => ({ ...f, [k]: v })); setErrors(e => ({ ...e, [k]: false })); };
-  const validate = () => { const e = {}; if (!form.sport) e.sport = true; if (!form.betType) e.betType = true; if (!form.book) e.book = true; if (!form.description.trim()) e.description = true; if (!validateOdds(form.odds)) e.odds = true; if (!form.stake || Number(form.stake) <= 0) e.stake = true; setErrors(e); return !Object.keys(e).length; };
-  const handleSave = () => { if (!validate()) return; const bet = { ...form, id: form.id || uid(), odds: Number(form.odds), stake: Number(form.stake) }; setBets(prev => { const u = form.id ? prev.map(b => b.id === bet.id ? bet : b) : [bet, ...prev]; saveBets(u); return u; }); setSaved(true); setEditBet(null); setFormState(blank); setTimeout(() => { setSaved(false); setActiveTab("history"); }, 800); };
+  const isParlay = form.betType === "Parlay";
+
+  // For parlays, auto-build description from legs and derive odds field (stored as string summary)
+  const legOddsStr = (l) => { if (!l.num) return ""; const n = Number(l.num); return l.sign === "+" ? `+${n}` : `-${n}`; };
+  const parlayDescription = isParlay && form.legs.length > 0
+    ? form.legs.filter(l => l.description).map(l => l.description).join(" / ")
+    : "";
+
+  const validate = () => {
+    const e = {};
+    if (!form.sport) e.sport = true;
+    if (!form.betType) e.betType = true;
+    if (!form.book) e.book = true;
+    if (!form.stake || Number(form.stake) <= 0) e.stake = true;
+    if (isParlay) {
+      if (form.legs.length < 2) e.legs = "Add at least 2 legs";
+      else if (form.legs.some(l => !l.description.trim())) e.legs = "All legs need a description";
+      else if (form.legs.some(l => !l.num || Number(l.num) <= 0)) e.legs = "All legs need valid odds";
+    } else {
+      if (!form.description.trim()) e.description = true;
+      if (!validateOdds(form.odds)) e.odds = true;
+    }
+    setErrors(e);
+    return !Object.keys(e).length;
+  };
+
+  const handleSave = () => {
+    if (!validate()) return;
+    const description = isParlay ? parlayDescription : form.description;
+    // For parlays, store odds as "Parlay" label; individual leg odds are in legs array
+    const oddsValue = isParlay ? "parlay" : Number(form.odds);
+    const bet = { ...form, id: form.id || uid(), description, odds: oddsValue, stake: Number(form.stake) };
+    setBets(prev => { const u = form.id ? prev.map(b => b.id === bet.id ? bet : b) : [bet, ...prev]; saveBets(u); return u; });
+    setSaved(true); setEditBet(null); setFormState(blank);
+    setTimeout(() => { setSaved(false); setActiveTab("history"); }, 800);
+  };
+
   const handleDelete = () => { if (!form.id) return; setBets(prev => { const u = prev.filter(b => b.id !== form.id); saveBets(u); return u; }); setEditBet(null); setFormState(blank); setActiveTab("history"); };
   const err = (k) => errors[k] ? { borderColor: C.red } : {};
   const isEdit = !!form.id;
+
   return (
     <div style={{ padding: 16 }}>
       <div style={{ fontFamily: "'Barlow Condensed'", fontSize: 22, fontWeight: 700, marginBottom: 16 }}>{isEdit ? "Edit Bet" : "Log a Bet"}</div>
       <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+
+        {/* Sport + Bet Type */}
         <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
-          <div><label>Sport *</label><select value={form.sport} onChange={e => set("sport", e.target.value)} style={err("sport")}><option value="">Select</option>{SPORTS.map(s => <option key={s}>{s}</option>)}</select></div>
-          <div><label>Bet Type *</label><select value={form.betType} onChange={e => set("betType", e.target.value)} style={err("betType")}><option value="">Select</option>{BET_TYPES.map(b => <option key={b}>{b}</option>)}</select></div>
+          <div><label>Sport *</label>
+            <select value={form.sport} onChange={e => set("sport", e.target.value)} style={err("sport")}>
+              <option value="">Select</option>{SPORTS.map(s => <option key={s}>{s}</option>)}
+            </select>
+          </div>
+          <div><label>Bet Type *</label>
+            <select value={form.betType} onChange={e => set("betType", e.target.value)} style={err("betType")}>
+              <option value="">Select</option>{BET_TYPES.map(b => <option key={b}>{b}</option>)}
+            </select>
+          </div>
         </div>
-        <div><label>Sportsbook *</label><select value={form.book} onChange={e => set("book", e.target.value)} style={err("book")}><option value="">Select</option>{BOOKS.map(b => <option key={b}>{b}</option>)}</select></div>
-        <div><label>Description *</label><input value={form.description} onChange={e => set("description", e.target.value)} placeholder="e.g. Chiefs -3.5 vs Ravens" style={err("description")} /></div>
-        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
-          <div><label>Odds (American) *</label><input value={form.odds} onChange={e => set("odds", e.target.value)} placeholder="-110 or +150" style={err("odds")} />{errors.odds && <div style={{ fontSize: 11, color: C.red, marginTop: 3 }}>Enter valid odds (e.g. -110, +150)</div>}</div>
-          <div><label>Stake ($) *</label><input type="number" min="0.01" step="0.01" value={form.stake} onChange={e => set("stake", e.target.value)} placeholder="100" style={err("stake")} /></div>
+
+        {/* Book */}
+        <div><label>Sportsbook *</label>
+          <select value={form.book} onChange={e => set("book", e.target.value)} style={err("book")}>
+            <option value="">Select</option>{BOOKS.map(b => <option key={b}>{b}</option>)}
+          </select>
         </div>
-        {validateOdds(form.odds) && (<div style={{ fontSize: 12, color: C.textSecondary, background: C.bg, border: `1px solid ${C.border}`, borderRadius: 8, padding: "8px 12px" }}>Implied: <span style={{ color: C.textPrimary, fontWeight: 600 }}>{(americanToImplied(form.odds) * 100).toFixed(1)}%</span>{form.stake && Number(form.stake) > 0 && <> · To win: <span style={{ color: C.green, fontWeight: 600 }}>${americanToProfit(form.odds, form.stake).toFixed(2)}</span></>}</div>)}
-        <div><label>Result</label><div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 6 }}>{RESULTS.map(r => { const rc = { win: C.green, loss: C.red, push: C.textSecondary, pending: C.amber }[r]; const active = form.result === r; return <button key={r} onClick={() => set("result", r)} style={{ padding: "9px 4px", fontSize: 13, background: active ? rc : C.bg, color: active ? C.bg : rc, border: `1.5px solid ${rc}`, borderRadius: 8, textTransform: "capitalize", fontWeight: 700 }}>{r}</button>; })}</div></div>
+
+        {/* Description (non-parlay) or Parlay legs */}
+        {isParlay ? (
+          <div>
+            <ParlayLegs legs={form.legs} onChange={v => set("legs", v)} />
+            {errors.legs && <div style={{ fontSize: 11, color: C.red, marginTop: 4 }}>{errors.legs}</div>}
+            {parlayDescription && (
+              <div style={{ fontSize: 12, color: C.textSecondary, marginTop: 8 }}>
+                Description: <span style={{ color: C.textPrimary }}>{parlayDescription}</span>
+              </div>
+            )}
+          </div>
+        ) : (
+          <div><label>Description *</label>
+            <input value={form.description} onChange={e => set("description", e.target.value)} placeholder="e.g. Chiefs -3.5 vs Ravens" style={err("description")} />
+          </div>
+        )}
+
+        {/* Odds + Stake */}
+        <div style={{ display: "grid", gridTemplateColumns: isParlay ? "1fr" : "1fr 1fr", gap: 10 }}>
+          {!isParlay && <OddsInput value={form.odds} onChange={v => set("odds", v)} error={errors.odds} />}
+          <div><label>Stake ($) *</label>
+            <input type="number" min="0.01" step="0.01" value={form.stake} onChange={e => set("stake", e.target.value)} placeholder="100" style={err("stake")} />
+          </div>
+        </div>
+
+        {/* Implied / to-win helper (non-parlay) */}
+        {!isParlay && validateOdds(form.odds) && form.stake && Number(form.stake) > 0 && (
+          <div style={{ fontSize: 12, color: C.textSecondary, background: C.bg, border: `1px solid ${C.border}`, borderRadius: 8, padding: "8px 12px" }}>
+            To win: <span style={{ color: C.green, fontWeight: 600 }}>${americanToProfit(form.odds, form.stake).toFixed(2)}</span>
+          </div>
+        )}
+
+        {/* Parlay payout field — shown when result is win */}
+        {isParlay && form.result === "win" && (
+          <div>
+            <label>Actual Payout (profit, not total return) *</label>
+            <input type="number" min="0.01" step="0.01" value={form.payout} onChange={e => set("payout", e.target.value)} placeholder="e.g. 250.00" />
+            <div style={{ fontSize: 12, color: C.textSecondary, marginTop: 4 }}>Enter how much profit you received (total payout minus your stake)</div>
+          </div>
+        )}
+
+        {/* Result */}
+        <div><label>Result</label>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 6 }}>
+            {RESULTS.map(r => { const rc = { win: C.green, loss: C.red, push: C.textSecondary, pending: C.amber }[r]; const active = form.result === r; return <button key={r} onClick={() => set("result", r)} style={{ padding: "9px 4px", fontSize: 13, background: active ? rc : C.bg, color: active ? C.bg : rc, border: `1.5px solid ${rc}`, borderRadius: 8, textTransform: "capitalize", fontWeight: 700 }}>{r}</button>; })}
+          </div>
+        </div>
+
+        {/* Date */}
         <div><label>Date</label><input type="date" value={form.date} onChange={e => set("date", e.target.value)} /></div>
+
+        {/* Notes */}
         <div><label>Notes (optional)</label><input value={form.notes} onChange={e => set("notes", e.target.value)} placeholder="Why you made this bet..." /></div>
+
+        {/* Actions */}
         <div style={{ display: "flex", gap: 10, marginTop: 4 }}>
           <button onClick={handleSave} disabled={saved} style={{ flex: 1, padding: "13px", fontSize: 15, background: saved ? C.green : C.blue, color: "#fff" }}>{saved ? "✓ Saved!" : isEdit ? "Update Bet" : "Save Bet"}</button>
           {isEdit && <button onClick={handleDelete} style={{ padding: "13px 16px", background: "transparent", color: C.red, border: `1.5px solid ${C.red}`, fontSize: 13 }}>Delete</button>}
@@ -781,5 +958,4 @@ export default function App() {
       </div>
     </>
   );
-
 }
