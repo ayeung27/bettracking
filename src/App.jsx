@@ -1,4 +1,3 @@
-import React from "react";
 import { useState, useEffect, useMemo, useRef } from "react";
 
 // ── MATH HELPERS ─────────────────────────────────────────────────────────────
@@ -45,6 +44,14 @@ const validateOdds = (val) => {
   if (isNaN(n) || val === "" || val === "-") return false;
   if (n === 0 || (n > -100 && n < 100)) return false;
   return true;
+};
+const americanToDecimal = (o) => { const n = Number(o); if (n > 0) return (n / 100) + 1; return (100 / Math.abs(n)) + 1; };
+const decimalToAmerican = (d) => d >= 2 ? Math.round((d - 1) * 100) : Math.round(-100 / (d - 1));
+const calcParlayOdds = (legs) => {
+  const odds = legs.map(l => { if (!l.num) return null; const n = Number(l.num); return l.sign === "+" ? n : -n; }).filter(o => o !== null && !isNaN(o) && validateOdds(String(o)));
+  if (odds.length < 2) return null;
+  const dec = odds.reduce((acc, o) => acc * americanToDecimal(o), 1);
+  return { american: decimalToAmerican(dec), decimal: dec };
 };
 const fmtMoney = (n) => (n >= 0 ? "+" : "") + "$" + Math.abs(n).toFixed(2);
 const fmtOdds = (o) => { const n = Number(o); return n > 0 ? `+${n}` : `${n}`; };
@@ -197,23 +204,41 @@ function MiniChart({ data }) {
 }
 
 function BetRow({ bet, onEdit }) {
-  const profit = bet.result === "win" ? americanToProfit(bet.odds, bet.stake) : bet.result === "loss" ? -Number(bet.stake) : null;
+  const isParlay = bet.betType === "Parlay";
+  const profit = bet.result === "win"
+    ? (bet.payout != null ? Number(bet.payout) : americanToProfit(bet.odds, bet.stake))
+    : bet.result === "loss" ? -Number(bet.stake) : null;
   const rc = { win: C.green, loss: C.red, push: C.textSecondary, pending: C.amber }[bet.result];
+
+  // Odds display: parlay shows book odds (if entered) or calculated fair odds
+  const parlayCalc = isParlay && bet.legs?.length >= 2 ? calcParlayOdds(bet.legs) : null;
+  const displayOdds = isParlay
+    ? (bet.bookOdds ? Number(bet.bookOdds) : parlayCalc?.american ?? null)
+    : Number(bet.odds);
+  const oddsColor = displayOdds > 0 ? C.green : displayOdds < 0 ? C.textPrimary : C.textSecondary;
+  const oddsLabel = isParlay && bet.bookOdds ? fmtOdds(bet.bookOdds) : displayOdds !== null ? fmtOdds(displayOdds) : "Parlay";
+  const oddsTag = isParlay && !bet.bookOdds && parlayCalc ? " (calc)" : isParlay && bet.bookOdds && parlayCalc ? ` (fair: ${fmtOdds(parlayCalc.american)})` : "";
+
   return (
     <div onClick={() => onEdit(bet)} style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: 10, padding: "12px 14px", cursor: "pointer", transition: "border-color .15s" }}
       onMouseEnter={e => e.currentTarget.style.borderColor = C.blue} onMouseLeave={e => e.currentTarget.style.borderColor = C.border}>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 6 }}>
         <div style={{ flex: 1, marginRight: 8 }}>
           <div style={{ fontSize: 14, fontWeight: 600 }}>{bet.description}</div>
-          <div style={{ fontSize: 12, color: C.textSecondary, marginTop: 3 }}>{bet.sport} · {bet.betType} · {bet.book}</div>
+          <div style={{ fontSize: 12, color: C.textSecondary, marginTop: 3 }}>
+            {bet.sport} · {bet.betType}{isParlay && bet.legs?.length ? ` (${bet.legs.length} legs)` : ""} · {bet.book}
+          </div>
         </div>
         <div style={{ textAlign: "right", flexShrink: 0 }}>
           <div style={{ fontFamily: "'Barlow Condensed'", fontSize: 18, fontWeight: 700, color: rc }}>{bet.result.charAt(0).toUpperCase() + bet.result.slice(1)}</div>
           {profit !== null && <div style={{ fontSize: 13, color: profit >= 0 ? C.green : C.red, fontWeight: 600 }}>{fmtMoney(profit)}</div>}
         </div>
       </div>
-      <div style={{ display: "flex", gap: 12, fontSize: 12, color: C.textSecondary }}>
-        <span>Odds: <span style={{ color: C.textPrimary, fontWeight: 500 }}>{fmtOdds(bet.odds)}</span></span>
+      <div style={{ display: "flex", gap: 12, fontSize: 12, color: C.textSecondary, flexWrap: "wrap" }}>
+        <span>
+          Odds: <span style={{ color: oddsColor, fontWeight: 600 }}>{oddsLabel}</span>
+          {oddsTag && <span style={{ color: C.textSecondary, fontStyle: "italic" }}>{oddsTag}</span>}
+        </span>
         <span>Stake: <span style={{ color: C.textPrimary, fontWeight: 500 }}>${Number(bet.stake).toFixed(2)}</span></span>
         {bet.date && <span>{new Date(bet.date).toLocaleDateString("en-US", { month: "short", day: "numeric" })}</span>}
       </div>
@@ -340,20 +365,32 @@ function ParlayLegs({ legs, onChange }) {
           </div>
         ))}
       </div>
-      {legs.length >= 2 && legs.every(l => l.num) && (
-        <div style={{ fontSize: 12, color: C.textSecondary, marginTop: 8, padding: "8px 12px", background: C.bg, border: `1px solid ${C.border}`, borderRadius: 8 }}>
-          {legs.length}-leg parlay · Combined prob: <span style={{ color: C.textPrimary, fontWeight: 600 }}>
-            {(legs.reduce((acc, l) => acc * americanToImplied(getLegOdds(l)), 1) * 100).toFixed(1)}%
-          </span>
-        </div>
-      )}
+      {legs.length >= 2 && legs.every(l => l.num) && (() => {
+        const calc = calcParlayOdds(legs);
+        if (!calc) return null;
+        const combinedProb = (legs.reduce((acc, l) => acc * americanToImplied(getLegOdds(l)), 1) * 100).toFixed(1);
+        return (
+          <div style={{ marginTop: 8, padding: "10px 12px", background: C.bg, border: `1px solid ${C.border}`, borderRadius: 8, display: "flex", flexDirection: "column", gap: 4 }}>
+            <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12 }}>
+              <span style={{ color: C.textSecondary }}>{legs.length}-leg fair odds</span>
+              <span style={{ color: C.green, fontWeight: 700, fontFamily: "'Barlow Condensed'", fontSize: 16 }}>
+                {calc.american > 0 ? "+" : ""}{calc.american}
+              </span>
+            </div>
+            <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12 }}>
+              <span style={{ color: C.textSecondary }}>Combined win prob</span>
+              <span style={{ color: C.textPrimary, fontWeight: 600 }}>{combinedProb}%</span>
+            </div>
+          </div>
+        );
+      })()}
     </div>
   );
 }
 
 // ── LOG BET ───────────────────────────────────────────────────────────────────
 function LogBet({ bets, setBets, editBet, setEditBet, setActiveTab }) {
-  const blank = { sport: "", betType: "", book: "", description: "", odds: "", stake: "", payout: "", result: "pending", notes: "", date: new Date().toISOString().split("T")[0], legs: [] };
+  const blank = { sport: "", betType: "", book: "", description: "", odds: "", stake: "", payout: "", bookOdds: "", result: "pending", notes: "", date: new Date().toISOString().split("T")[0], legs: [] };
 
   // When loading an existing parlay bet for editing, reconstruct legs from stored legs array
   const [form, setFormState] = useState(editBet || blank);
@@ -462,12 +499,46 @@ function LogBet({ bets, setBets, editBet, setEditBet, setActiveTab }) {
           </div>
         )}
 
+        {/* Parlay: book odds entry + comparison to fair odds */}
+        {isParlay && (
+          <div>
+            <OddsInput value={form.bookOdds} onChange={v => set("bookOdds", v)} error={false} />
+            <div style={{ fontSize: 11, color: C.textSecondary, marginTop: 3 }}>
+              Optional — enter the total odds your book gave you. We'll compare against the fair calculated odds.
+            </div>
+            {(() => {
+              const calc = form.legs.length >= 2 ? calcParlayOdds(form.legs) : null;
+              if (!calc || !validateOdds(form.bookOdds)) return null;
+              const diff = Number(form.bookOdds) - calc.american;
+              const isJuiced = diff < 0; // book paid less than fair
+              return (
+                <div style={{ marginTop: 8, padding: "10px 12px", background: C.bg, border: `1px solid ${isJuiced ? C.amber : C.green}`, borderRadius: 8, fontSize: 12 }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 4 }}>
+                    <span style={{ color: C.textSecondary }}>Fair parlay odds</span>
+                    <span style={{ fontWeight: 600 }}>{calc.american > 0 ? "+" : ""}{calc.american}</span>
+                  </div>
+                  <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 4 }}>
+                    <span style={{ color: C.textSecondary }}>Book odds</span>
+                    <span style={{ fontWeight: 600 }}>{fmtOdds(form.bookOdds)}</span>
+                  </div>
+                  <div style={{ display: "flex", justifyContent: "space-between" }}>
+                    <span style={{ color: C.textSecondary }}>Parlay tax</span>
+                    <span style={{ fontWeight: 600, color: isJuiced ? C.amber : C.green }}>
+                      {isJuiced ? `Book kept ${Math.abs(diff)} points` : `You got ${diff} extra points`}
+                    </span>
+                  </div>
+                </div>
+              );
+            })()}
+          </div>
+        )}
+
         {/* Parlay payout field — shown when result is win */}
         {isParlay && form.result === "win" && (
           <div>
-            <label>Actual Payout (profit, not total return) *</label>
+            <label>Actual Profit *</label>
             <input type="number" min="0.01" step="0.01" value={form.payout} onChange={e => set("payout", e.target.value)} placeholder="e.g. 250.00" />
-            <div style={{ fontSize: 12, color: C.textSecondary, marginTop: 4 }}>Enter how much profit you received (total payout minus your stake)</div>
+            <div style={{ fontSize: 12, color: C.textSecondary, marginTop: 4 }}>Profit only — total payout minus your stake</div>
           </div>
         )}
 
